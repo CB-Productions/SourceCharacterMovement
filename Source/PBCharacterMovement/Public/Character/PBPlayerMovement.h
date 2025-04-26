@@ -9,6 +9,16 @@
 #include "PBPlayerMovement.generated.h"
 
 constexpr float LADDER_MOUNT_TIMEOUT = 0.2f;
+/** ------------------------------------------------------------------
+ * Custom movement modes for Titanfall‑style parkour
+ * ------------------------------------------------------------------*/
+UENUM(BlueprintType)
+enum class ECustomMovementMode : uint8
+{
+    CMOVE_None     UMETA(DisplayName = "None"),
+    CMOVE_WallRun  UMETA(DisplayName = "WallRun"),
+    CMOVE_WallHang UMETA(DisplayName = "WallHang")
+};
 
 // Crouch Timings (in seconds)
 constexpr float MOVEMENT_DEFAULT_CROUCHTIME = 0.4f;
@@ -29,6 +39,32 @@ protected:
 	/** If the player is using a ladder */
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = Gameplay)
 	bool bOnLadder;
+/*====================  Titanfall‑style WALL‑RUN ====================*/
+bool   bIsWallRunning = false;
+bool   bIsWallHanging = false;
+FVector CurrentWallNormal = FVector::ZeroVector;
+float   WallRunStartTime = 0.f;
+
+UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: WallRun")
+float MaxWallRunTime = 1.75f;
+
+UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: WallRun")
+float MaxWallHangTime = 1.10f;
+
+UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: WallRun")
+float WallRunGravityScale = 0.30f;
+
+UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: WallRun")
+float WallRunSpeedMultiplier = 1.35f;
+
+UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: WallRun")
+float WallMinRunnableDot = 0.10f;
+
+bool StartWallRun(const FVector& SurfaceNormal);
+void EndWallRun(bool bFellOff = false);
+bool IsWallRunnable(const FVector& SurfaceNormal) const;
+FVector GetWallRunDirection(const FVector& SurfaceNormal) const;
+void PhysWallRun(float DeltaTime, int32 Iterations);
 
 	/** Should crouch slide? */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Walking")
@@ -247,6 +283,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)")
 	uint32 bShowPos : 1;
 
+UFUNCTION(BlueprintPure, Category="Character Movement|WallRun")
+bool IsWallRunning() const { return bIsWallRunning; }
+
+UFUNCTION(BlueprintPure, Category="Character Movement|WallRun")
+bool IsWallHanging() const { return bIsWallHanging; }
+
+virtual void PhysCustom(float DeltaTime, int32 Iterations) override;
 	UPBPlayerMovement();
 
 	virtual void InitializeComponent() override;

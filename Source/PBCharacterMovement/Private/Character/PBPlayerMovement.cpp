@@ -36,7 +36,6 @@ const float VERTICAL_SLOPE_NORMAL_Z = 0.001f; // Slope is vertical if Abs(Normal
 #define USE_HL2_GRAVITY 1
 #endif
 
-// Purpose: override default player movement
 UPBPlayerMovement::UPBPlayerMovement()
 {
 	// We have our own air movement handling, so we can allow for full air
@@ -184,6 +183,14 @@ UPBPlayerMovement::UPBPlayerMovement()
 	RequestedVelocity = FVector::ZeroVector;
 	// Optimization
 	bEnableServerDualMoveScopedMovementUpdates = true;
+	
+	// Purpose: override default player movement
+	// Wall‑run defaults
+	MaxWallRunTime   = 1.75f;
+	MaxWallHangTime  = 1.10f;
+	WallRunGravityScale = 0.30f;
+	WallRunSpeedMultiplier = 1.35f;
+	WallMinRunnableDot = 0.10f;
 }
 
 void UPBPlayerMovement::InitializeComponent()
@@ -270,6 +277,29 @@ void UPBPlayerMovement::TickComponent(float DeltaTime, enum ELevelTick TickType,
 		BrakingWindowTimeElapsed = 0.0f; // Clear window
 	}
 	bCrouchFrameTolerated = IsCrouching();
+
+	// Auto wall‑run check
+	if (IsFalling() && !bIsWallRunning && !bIsWallHanging)
+	{
+	    const float TraceDist = 50.f;
+	    const FVector Loc = UpdatedComponent->GetComponentLocation();
+	    const FVector Right = UpdatedComponent->GetRightVector();
+	    for (int Side = -1; Side <= 1; Side += 2)
+	    {
+	        FHitResult WallHit;
+	        const FVector Start = Loc;
+	        const FVector End = Start + Right * TraceDist * Side;
+	        FCollisionQueryParams Params(SCENE_QUERY_STAT(WallRunDetect), false, CharacterOwner);
+	        if (GetWorld()->LineTraceSingleByChannel(WallHit, Start, End, ECC_WorldStatic, Params))
+	        {
+	            if (WallHit.bBlockingHit && IsWallRunnable(WallHit.ImpactNormal))
+	            {
+	                StartWallRun(WallHit.ImpactNormal);
+	                break;
+	            }
+	        }
+	    }
+	}
 }
 
 bool UPBPlayerMovement::DoJump(bool bClientSimulation)
@@ -378,6 +408,7 @@ FVector UPBPlayerMovement::HandleSlopeBoosting(const FVector& SlideResult, const
 	}
 	const float WallAngle = FMath::Abs(Hit.ImpactNormal.Z);
 	FVector ImpactNormal = Normal;
+
 	// If too extreme, use the more stable hit normal
 	if (!(WallAngle <= VERTICAL_SLOPE_NORMAL_Z || WallAngle == 1.0f))
 	{
@@ -1972,4 +2003,131 @@ UPBMoveStepSound* UPBPlayerMovement::GetMoveStepSoundBySurface(EPhysicalSurface 
 	}
 
 	return nullptr;
+}
+// ============================  TITANFALL WALL‑RUN IMPLEMENTATION  ============================
+
+void UPBPlayerMovement::PhysCustom(float DeltaTime, int32 Iterations)
+{
+    switch (CustomMovementMode)
+    {
+    case static_cast<uint8>(ECustomMovementMode::CMOVE_WallRun):
+    case static_cast<uint8>(ECustomMovementMode::CMOVE_WallHang):
+        PhysWallRun(DeltaTime, Iterations);
+        return;
+    default:
+        Super::PhysCustom(DeltaTime, Iterations);
+    }
+}
+
+bool UPBPlayerMovement::IsWallRunnable(const FVector& SurfaceNormal) const
+{
+    return SurfaceNormal.Z > -WallMinRunnableDot && SurfaceNormal.Z < WallMinRunnableDot;
+}
+
+FVector UPBPlayerMovement::GetWallRunDirection(const FVector& WallNormal) const
+{
+    FVector Dir = FVector::CrossProduct(WallNormal, FVector::UpVector);
+    if ((Dir | Velocity) < 0.f) Dir *= -1.f;
+    return Dir.GetSafeNormal();
+}
+
+bool UPBPlayerMovement::StartWallRun(const FVector& SurfaceNormal)
+{
+    if (bIsWallRunning || !IsWallRunnable(SurfaceNormal)) return false;
+
+    if (CharacterOwner)
+    {
+        CharacterOwner->JumpCurrentCount = 0;
+        CharacterOwner->JumpCurrentCountPreJump = 0;
+    }
+
+    bIsWallRunning = true;
+    bIsWallHanging = false;
+    CurrentWallNormal = SurfaceNormal;
+    WallRunStartTime = GetWorld()->GetTimeSeconds();
+
+    Velocity = GetWallRunDirection(CurrentWallNormal) * Velocity.Size() * WallRunSpeedMultiplier;
+    SetMovementMode(MOVE_Custom, static_cast<uint8>(ECustomMovementMode::CMOVE_WallRun));
+    return true;
+}
+
+void UPBPlayerMovement::EndWallRun(bool bFellOff)
+{
+    if (!bIsWallRunning && !bIsWallHanging) return;
+
+    bIsWallRunning = false;
+    bIsWallHanging = false;
+    CurrentWallNormal = FVector::ZeroVector;
+
+    if (MovementMode != MOVE_Walking)
+    {
+        SetMovementMode(MOVE_Falling);
+    }
+}
+
+void UPBPlayerMovement::PhysWallRun(float DeltaTime, int32 Iterations)
+{
+    if (!bIsWallRunning && !bIsWallHanging)
+    {
+        EndWallRun();
+        return;
+    }
+
+    const float Elapsed = GetWorld()->GetTimeSeconds() - WallRunStartTime;
+    const bool bHang = CustomMovementMode == static_cast<uint8>(ECustomMovementMode::CMOVE_WallHang);
+    const float Limit = bHang ? MaxWallHangTime : MaxWallRunTime;
+    if (Elapsed > Limit)
+    {
+        EndWallRun(true);
+        return;
+    }
+
+    if (CharacterOwner->bPressedJump)
+    {
+        Velocity += CurrentWallNormal * 200.f;
+        EndWallRun();
+        CharacterOwner->bPressedJump = false;
+        return;
+    }
+    if (bWantsToCrouch)
+    {
+        EndWallRun(true);
+        return;
+    }
+
+    const bool bHasInput = !Acceleration.IsNearlyZero();
+    if (bIsWallRunning && !bHasInput)
+    {
+        CustomMovementMode = static_cast<uint8>(ECustomMovementMode::CMOVE_WallHang);
+        bIsWallHanging = true;
+        Velocity = FVector::ZeroVector;
+        return;
+    }
+    else if (bIsWallHanging && bHasInput)
+    {
+        CustomMovementMode = static_cast<uint8>(ECustomMovementMode::CMOVE_WallRun);
+        bIsWallHanging = false;
+        WallRunStartTime = GetWorld()->GetTimeSeconds();
+    }
+
+    if (bIsWallRunning)
+    {
+        Velocity += FVector(0.f,0.f, GetGravityZ()*WallRunGravityScale) * DeltaTime;
+        Velocity = GetWallRunDirection(CurrentWallNormal) * GetMaxSpeed() * WallRunSpeedMultiplier;
+        FVector Delta = Velocity * DeltaTime;
+        FHitResult Hit;
+        SafeMoveUpdatedComponent(Delta, UpdatedComponent->GetComponentRotation(), true, Hit);
+        if (Hit.bBlockingHit)
+        {
+            if (!IsWallRunnable(Hit.ImpactNormal))
+                EndWallRun(true);
+            else
+                CurrentWallNormal = Hit.ImpactNormal;
+        }
+    }
+    else if (bIsWallHanging)
+    {
+        Velocity = FVector::ZeroVector;
+        AddForce(-CurrentWallNormal * 50.f);
+    }
 }

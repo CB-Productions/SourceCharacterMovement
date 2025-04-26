@@ -85,6 +85,8 @@ APBPlayerCharacter::APBPlayerCharacter(const FObjectInitializer& ObjectInitializ
 	MinLandBounceSpeed = 329.565f;
 
 	CapDamageMomentumZ = 476.25f;
+	// Enable Titanfall-style double jump
+	JumpMaxCount = 2;
 }
 
 void APBPlayerCharacter::BeginPlay()
